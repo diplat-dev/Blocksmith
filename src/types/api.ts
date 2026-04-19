@@ -215,12 +215,15 @@ export interface SkinEntry {
   modelVariant: "classic" | "slim";
   tags: string[];
   thumbnailPath: string | null;
+  previewDataUrl: string | null;
   importedAt: string;
   updatedAt: string;
 }
 
 export interface ImportSkinInput {
-  sourcePath: string;
+  sourcePath?: string | null;
+  fileName?: string | null;
+  sourceBytes?: number[] | null;
   displayName?: string | null;
   modelVariant: "classic" | "slim";
   tags: string[];

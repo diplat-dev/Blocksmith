@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { ChangeEvent, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   applySkinToAccount,
@@ -11,11 +11,23 @@ import { EmptyState } from "../shared/EmptyState";
 
 export function SkinsView() {
   const queryClient = useQueryClient();
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [sourcePath, setSourcePath] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [modelVariant, setModelVariant] = useState<"classic" | "slim">("classic");
   const [tags, setTags] = useState("");
   const [selectedAccountId, setSelectedAccountId] = useState("");
+  const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
+  const [selectedFileBytes, setSelectedFileBytes] = useState<number[] | null>(null);
+  const [selectedPreviewUrl, setSelectedPreviewUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (selectedPreviewUrl) {
+        URL.revokeObjectURL(selectedPreviewUrl);
+      }
+    };
+  }, [selectedPreviewUrl]);
 
   const skinsQuery = useQuery({
     queryKey: ["skins"],
@@ -33,10 +45,48 @@ export function SkinsView() {
     }
   }, [accountsQuery.data, selectedAccountId]);
 
+  function clearSelectedFile() {
+    setSelectedFileName(null);
+    setSelectedFileBytes(null);
+    setSelectedPreviewUrl((current) => {
+      if (current) {
+        URL.revokeObjectURL(current);
+      }
+      return null;
+    });
+
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  }
+
+  async function handleFilePicked(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+    setSelectedFileName(file.name);
+    setSelectedFileBytes(bytes);
+    setSourcePath(file.name);
+    setSelectedPreviewUrl((current) => {
+      if (current) {
+        URL.revokeObjectURL(current);
+      }
+      return URL.createObjectURL(file);
+    });
+  }
+
+  const hasImportSource =
+    Boolean(selectedFileBytes?.length) || Boolean(sourcePath.trim());
+
   const importMutation = useMutation({
     mutationFn: () =>
       importSkin({
-        sourcePath,
+        sourcePath: selectedFileBytes ? null : sourcePath.trim(),
+        fileName: selectedFileName,
+        sourceBytes: selectedFileBytes,
         displayName: displayName || null,
         modelVariant,
         tags: tags
@@ -45,6 +95,7 @@ export function SkinsView() {
           .filter(Boolean),
       }),
     onSuccess: async () => {
+      clearSelectedFile();
       setSourcePath("");
       setDisplayName("");
       setTags("");
@@ -85,12 +136,27 @@ export function SkinsView() {
 
         <div className="toolbar-grid">
           <label className="span-2">
-            <span>PNG path</span>
+            <span>Skin file</span>
             <input
-              value={sourcePath}
-              onChange={(event) => setSourcePath(event.target.value)}
-              placeholder="C:\\Path\\To\\my-skin.png"
+              ref={fileInputRef}
+              className="visually-hidden"
+              type="file"
+              accept=".png,image/png"
+              onChange={handleFilePicked}
             />
+            <div className="inline-input-row">
+              <input
+                value={sourcePath}
+                onChange={(event) => {
+                  clearSelectedFile();
+                  setSourcePath(event.target.value);
+                }}
+                placeholder="Browse for a PNG or paste a local path"
+              />
+              <button type="button" onClick={() => fileInputRef.current?.click()}>
+                Browse...
+              </button>
+            </div>
           </label>
 
           <label>
@@ -125,10 +191,28 @@ export function SkinsView() {
           </label>
         </div>
 
+        {selectedPreviewUrl ? (
+          <div className="skin-selection-preview">
+            <img
+              className="skin-preview-image"
+              src={selectedPreviewUrl}
+              alt={selectedFileName ?? "Selected skin preview"}
+            />
+            <div>
+              <p className="eyebrow">Selected</p>
+              <h4>{selectedFileName ?? "PNG selected"}</h4>
+              <p className="muted">
+                Blocksmith will copy this skin into the local library when you
+                import it.
+              </p>
+            </div>
+          </div>
+        ) : null}
+
         <div className="panel-actions">
           <button
             className="primary"
-            disabled={!sourcePath.trim()}
+            disabled={!hasImportSource}
             onClick={() => importMutation.mutate()}
           >
             {importMutation.isPending ? "Importing..." : "Import skin"}
@@ -161,31 +245,46 @@ export function SkinsView() {
 
           <div className="card-list">
             {(skinsQuery.data ?? []).map((skin) => (
-              <article className="result-card" key={skin.id}>
-                <div className="result-card-header">
-                  <div>
-                    <h4>{skin.displayName}</h4>
-                    <p className="muted">{skin.modelVariant}</p>
-                  </div>
-                  <div className="row-actions">
-                    <button
-                      onClick={() => applyMutation.mutate(skin.id)}
-                      disabled={!selectedAccountId}
-                    >
-                      Apply
-                    </button>
-                    <button
-                      className="danger-ghost"
-                      onClick={() => deleteMutation.mutate(skin.id)}
-                    >
-                      Remove
-                    </button>
-                  </div>
+              <article className="result-card skin-card" key={skin.id}>
+                <div className="skin-card-preview-shell">
+                  {skin.previewDataUrl ? (
+                    <img
+                      className="skin-preview-image"
+                      src={skin.previewDataUrl}
+                      alt={`${skin.displayName} preview`}
+                      loading="lazy"
+                    />
+                  ) : (
+                    <div className="skin-preview-fallback">No preview</div>
+                  )}
                 </div>
-                <p className="mono">{skin.localFilePath}</p>
-                <p className="muted">
-                  {skin.tags.length > 0 ? skin.tags.join(", ") : "No tags"}
-                </p>
+
+                <div className="skin-card-body">
+                  <div className="result-card-header">
+                    <div>
+                      <h4>{skin.displayName}</h4>
+                      <p className="muted">{skin.modelVariant}</p>
+                    </div>
+                    <div className="row-actions">
+                      <button
+                        onClick={() => applyMutation.mutate(skin.id)}
+                        disabled={!selectedAccountId}
+                      >
+                        Apply
+                      </button>
+                      <button
+                        className="danger-ghost"
+                        onClick={() => deleteMutation.mutate(skin.id)}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                  <p className="mono">{skin.localFilePath}</p>
+                  <p className="muted">
+                    {skin.tags.length > 0 ? skin.tags.join(", ") : "No tags"}
+                  </p>
+                </div>
               </article>
             ))}
           </div>
@@ -194,7 +293,7 @@ export function SkinsView() {
         <EmptyState
           eyebrow="Skins"
           title="No skins imported yet"
-          body="Point Blocksmith at a local PNG file and it will copy it into the launcher skin library."
+          body="Browse for a local PNG or paste a file path and Blocksmith will copy it into the launcher skin library."
         />
       )}
 

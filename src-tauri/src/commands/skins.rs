@@ -1,5 +1,10 @@
-use std::{ffi::OsStr, fs, path::Path};
+use std::{
+    ffi::OsStr,
+    fs,
+    path::{Path, PathBuf},
+};
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
 use tauri::State;
@@ -51,38 +56,76 @@ fn inner_list_skins(state: &AppState) -> AppResult<Vec<SkinEntry>> {
     )?;
 
     let rows = statement.query_map([], |row| {
+        let local_file_path: String = row.get(1)?;
         let tags_json: String = row.get(4)?;
-        Ok(SkinEntry {
-            id: row.get(0)?,
-            local_file_path: row.get(1)?,
-            display_name: row.get(2)?,
-            model_variant: row.get(3)?,
-            tags: serde_json::from_str(&tags_json).unwrap_or_default(),
-            thumbnail_path: row.get(5)?,
-            imported_at: row.get(6)?,
-            updated_at: row.get(7)?,
-        })
+        Ok(build_skin_entry(
+            row.get(0)?,
+            local_file_path,
+            row.get(2)?,
+            row.get(3)?,
+            serde_json::from_str(&tags_json).unwrap_or_default(),
+            row.get(5)?,
+            row.get(6)?,
+            row.get(7)?,
+        ))
     })?;
 
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
 fn inner_import_skin(state: &AppState, input: ImportSkinInput) -> AppResult<SkinEntry> {
-    let source_path = Path::new(&input.source_path);
-    if !source_path.exists() {
-        return Err(AppError::NotFound(format!(
-            "skin source file not found: {}",
-            source_path.to_string_lossy()
-        )));
-    }
+    let source_path = input
+        .source_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let source_file_name = input
+        .file_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let source_bytes = input.source_bytes.filter(|bytes| !bytes.is_empty());
 
-    if source_path.extension() != Some(OsStr::new("png")) {
-        return Err(AppError::Validation(
-            "skins must be imported from a .png file".to_string(),
-        ));
-    }
+    let (bytes, inferred_display_name) = match (source_path.as_deref(), source_bytes) {
+        (Some(source_path), None) => {
+            if !source_path.exists() {
+                return Err(AppError::NotFound(format!(
+                    "skin source file not found: {}",
+                    source_path.to_string_lossy()
+                )));
+            }
 
-    let bytes = fs::read(source_path)?;
+            if !has_png_extension(source_path) {
+                return Err(AppError::Validation(
+                    "skins must be imported from a .png file".to_string(),
+                ));
+            }
+
+            let bytes = fs::read(source_path)?;
+            let inferred_display_name = infer_skin_name_from_path(source_path);
+            (bytes, inferred_display_name)
+        }
+        (None, Some(source_bytes)) => (
+            source_bytes,
+            infer_skin_name_from_file_name(source_file_name.as_deref()),
+        ),
+        (Some(_), Some(source_bytes)) => (
+            source_bytes,
+            infer_skin_name_from_file_name(source_file_name.as_deref()).or_else(|| {
+                source_path
+                    .as_deref()
+                    .and_then(infer_skin_name_from_path)
+            }),
+        ),
+        (None, None) => {
+            return Err(AppError::Validation(
+                "choose a skin PNG or provide a PNG path before importing".to_string(),
+            ))
+        }
+    };
+
     if bytes.len() < PNG_SIGNATURE.len() || bytes[..PNG_SIGNATURE.len()] != PNG_SIGNATURE {
         return Err(AppError::Validation(
             "skin file is not a valid PNG".to_string(),
@@ -100,18 +143,12 @@ fn inner_import_skin(state: &AppState, input: ImportSkinInput) -> AppResult<Skin
 
     let skin_id = format!("skin-{}", Uuid::new_v4().simple());
     let destination = state.paths.skins_dir.join(format!("{skin_id}.png"));
-    fs::copy(source_path, &destination)?;
+    fs::write(&destination, &bytes)?;
 
     let display_name = input
         .display_name
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| {
-            source_path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or("Imported Skin")
-                .to_string()
-        });
+        .unwrap_or_else(|| inferred_display_name.unwrap_or_else(|| "Imported Skin".to_string()));
 
     let imported_at = Utc::now().to_rfc3339();
     let tags_json = serde_json::to_string(&input.tags)?;
@@ -142,17 +179,18 @@ fn inner_import_skin(state: &AppState, input: ImportSkinInput) -> AppResult<Skin
             ",
             params![skin_id],
             |row| {
+                let local_file_path: String = row.get(1)?;
                 let tags_json: String = row.get(4)?;
-                Ok(SkinEntry {
-                    id: row.get(0)?,
-                    local_file_path: row.get(1)?,
-                    display_name: row.get(2)?,
-                    model_variant: row.get(3)?,
-                    tags: serde_json::from_str(&tags_json).unwrap_or_default(),
-                    thumbnail_path: row.get(5)?,
-                    imported_at: row.get(6)?,
-                    updated_at: row.get(7)?,
-                })
+                Ok(build_skin_entry(
+                    row.get(0)?,
+                    local_file_path,
+                    row.get(2)?,
+                    row.get(3)?,
+                    serde_json::from_str(&tags_json).unwrap_or_default(),
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
             },
         )
         .optional()?
@@ -161,11 +199,11 @@ fn inner_import_skin(state: &AppState, input: ImportSkinInput) -> AppResult<Skin
 
 fn inner_delete_skin(state: &AppState, skin_id: &str) -> AppResult<()> {
     let connection = state.db()?;
-    let file_path: Option<String> = connection
+    let file_paths: Option<(String, Option<String>)> = connection
         .query_row(
-            "SELECT local_file_path FROM skins WHERE id = ?1",
+            "SELECT local_file_path, thumbnail_path FROM skins WHERE id = ?1",
             params![skin_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
 
@@ -175,10 +213,13 @@ fn inner_delete_skin(state: &AppState, skin_id: &str) -> AppResult<()> {
     )?;
     connection.execute("DELETE FROM skins WHERE id = ?1", params![skin_id])?;
 
-    if let Some(file_path) = file_path {
-        let file_path = Path::new(&file_path);
-        if file_path.exists() {
-            fs::remove_file(file_path)?;
+    if let Some((file_path, thumbnail_path)) = file_paths {
+        remove_if_exists(Path::new(&file_path))?;
+        if let Some(thumbnail_path) = thumbnail_path {
+            let thumbnail_path = PathBuf::from(thumbnail_path);
+            if thumbnail_path != PathBuf::from(&file_path) {
+                remove_if_exists(&thumbnail_path)?;
+            }
         }
     }
 
@@ -226,6 +267,76 @@ fn inner_apply_skin_to_account(state: &AppState, input: ApplySkinInput) -> AppRe
         "UPDATE accounts SET current_skin_id = ?1, updated_at = ?2 WHERE id = ?3",
         params![input.skin_id, Utc::now().to_rfc3339(), input.account_id],
     )?;
+
+    Ok(())
+}
+
+fn build_skin_entry(
+    id: String,
+    local_file_path: String,
+    display_name: String,
+    model_variant: String,
+    tags: Vec<String>,
+    thumbnail_path: Option<String>,
+    imported_at: String,
+    updated_at: String,
+) -> SkinEntry {
+    let preview_data_url = skin_preview_data_url(Path::new(&local_file_path)).ok();
+
+    SkinEntry {
+        id,
+        local_file_path,
+        display_name,
+        model_variant,
+        tags,
+        thumbnail_path,
+        preview_data_url,
+        imported_at,
+        updated_at,
+    }
+}
+
+fn skin_preview_data_url(path: &Path) -> AppResult<String> {
+    let bytes = fs::read(path)?;
+    Ok(format!(
+        "data:image/png;base64,{}",
+        BASE64_STANDARD.encode(bytes)
+    ))
+}
+
+fn has_png_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(OsStr::to_str)
+        .map(|extension| extension.eq_ignore_ascii_case("png"))
+        .unwrap_or(false)
+}
+
+fn infer_skin_name_from_path(path: &Path) -> Option<String> {
+    path.file_stem()
+        .and_then(OsStr::to_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn infer_skin_name_from_file_name(file_name: Option<&str>) -> Option<String> {
+    let file_name = file_name?.trim();
+    if file_name.is_empty() {
+        return None;
+    }
+
+    Path::new(file_name)
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn remove_if_exists(path: &Path) -> AppResult<()> {
+    if path.exists() {
+        fs::remove_file(path)?;
+    }
 
     Ok(())
 }

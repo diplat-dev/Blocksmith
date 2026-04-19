@@ -439,6 +439,7 @@ pub struct SkinEntry {
     pub model_variant: String,
     pub tags: Vec<String>,
     pub thumbnail_path: Option<String>,
+    pub preview_data_url: Option<String>,
     pub imported_at: String,
     pub updated_at: String,
 }
@@ -446,7 +447,12 @@ pub struct SkinEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportSkinInput {
-    pub source_path: String,
+    #[serde(default)]
+    pub source_path: Option<String>,
+    #[serde(default)]
+    pub file_name: Option<String>,
+    #[serde(default)]
+    pub source_bytes: Option<Vec<u8>>,
     #[serde(default)]
     pub display_name: Option<String>,
     pub model_variant: String,
