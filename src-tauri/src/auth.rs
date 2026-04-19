@@ -23,6 +23,8 @@ use crate::{
     state::AppState,
 };
 
+pub const PACKAGED_MICROSOFT_CLIENT_ID: &str = "58a4d0d2-52b6-4209-b74f-fc2c2033e9d8";
+
 const LIVE_AUTHORIZE_URL: &str = "https://login.live.com/oauth20_authorize.srf";
 const LIVE_TOKEN_URL: &str = "https://login.live.com/oauth20_token.srf";
 const XBOX_AUTH_URL: &str = "https://user.auth.xboxlive.com/user/authenticate";
@@ -48,14 +50,14 @@ pub fn sign_in_with_microsoft(state: &AppState) -> AppResult<AccountSummary> {
     let client_id = load_required_setting(state, "microsoft_client_id")?;
     let auth_client = http_client()?;
 
-    let (listener, redirect_uri) = start_loopback_listener()?;
+    let (listeners, redirect_uri) = start_loopback_listener()?;
     let state_token = random_token(32);
     let code_verifier = random_token(64);
     let code_challenge = pkce_challenge(&code_verifier);
     let auth_url = build_authorization_url(&client_id, &redirect_uri, &state_token, &code_challenge)?;
 
     open_system_browser(auth_url.as_str())?;
-    let auth_code = wait_for_oauth_code(listener, &state_token)?;
+    let auth_code = wait_for_oauth_code(listeners, &state_token)?;
 
     let live_tokens =
         exchange_authorization_code(&auth_client, &client_id, &redirect_uri, &code_verifier, &auth_code)?;
@@ -318,7 +320,11 @@ fn load_required_setting(state: &AppState, key: &str) -> AppResult<String> {
         .query_row("SELECT value FROM settings WHERE key = ?1", params![key], |row| row.get(0))
         .optional()?;
 
-    let value = value.unwrap_or_default();
+    let mut value = value.unwrap_or_default();
+    if key == "microsoft_client_id" && value.trim().is_empty() {
+        value = PACKAGED_MICROSOFT_CLIENT_ID.to_string();
+    }
+
     if value.trim().is_empty() {
         return Err(AppError::Validation(format!(
             "setting '{key}' must be configured before this integration can run"
@@ -337,10 +343,16 @@ fn http_client() -> AppResult<Client> {
         .map_err(Into::into)
 }
 
-fn start_loopback_listener() -> AppResult<(TcpListener, String)> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    Ok((listener, format!("http://127.0.0.1:{port}/callback")))
+fn start_loopback_listener() -> AppResult<(Vec<TcpListener>, String)> {
+    let ipv4_listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = ipv4_listener.local_addr()?.port();
+
+    let mut listeners = vec![ipv4_listener];
+    if let Ok(ipv6_listener) = TcpListener::bind(format!("[::1]:{port}")) {
+        listeners.push(ipv6_listener);
+    }
+
+    Ok((listeners, format!("http://localhost:{port}/callback")))
 }
 
 fn build_authorization_url(
@@ -362,74 +374,80 @@ fn build_authorization_url(
     Ok(url)
 }
 
-fn wait_for_oauth_code(listener: TcpListener, expected_state: &str) -> AppResult<String> {
-    listener.set_nonblocking(true)?;
+fn wait_for_oauth_code(listeners: Vec<TcpListener>, expected_state: &str) -> AppResult<String> {
+    for listener in &listeners {
+        listener.set_nonblocking(true)?;
+    }
     let deadline = Instant::now() + Duration::from_secs(240);
 
     loop {
-        match listener.accept() {
-            Ok((mut stream, _)) => {
-                let mut buffer = [0u8; 4096];
-                let read = stream.read(&mut buffer)?;
-                let request = String::from_utf8_lossy(&buffer[..read]);
-                let request_line = request.lines().next().unwrap_or_default();
-                let path = request_line
-                    .split_whitespace()
-                    .nth(1)
-                    .ok_or_else(|| AppError::Validation("oauth callback request was malformed".to_string()))?;
-                let callback_url = Url::parse(&format!("http://localhost{path}"))
-                    .map_err(|error| AppError::Validation(format!("oauth callback could not be parsed: {error}")))?;
+        for listener in &listeners {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let mut buffer = [0u8; 4096];
+                    let read = stream.read(&mut buffer)?;
+                    let request = String::from_utf8_lossy(&buffer[..read]);
+                    let request_line = request.lines().next().unwrap_or_default();
+                    let path = request_line
+                        .split_whitespace()
+                        .nth(1)
+                        .ok_or_else(|| AppError::Validation("oauth callback request was malformed".to_string()))?;
+                    let callback_url = Url::parse(&format!("http://localhost{path}")).map_err(|error| {
+                        AppError::Validation(format!("oauth callback could not be parsed: {error}"))
+                    })?;
 
-                let state = callback_url
-                    .query_pairs()
-                    .find(|(key, _)| key == "state")
-                    .map(|(_, value)| value.into_owned());
-                let code = callback_url
-                    .query_pairs()
-                    .find(|(key, _)| key == "code")
-                    .map(|(_, value)| value.into_owned());
-                let error = callback_url
-                    .query_pairs()
-                    .find(|(key, _)| key == "error")
-                    .map(|(_, value)| value.into_owned());
+                    let state = callback_url
+                        .query_pairs()
+                        .find(|(key, _)| key == "state")
+                        .map(|(_, value)| value.into_owned());
+                    let code = callback_url
+                        .query_pairs()
+                        .find(|(key, _)| key == "code")
+                        .map(|(_, value)| value.into_owned());
+                    let error = callback_url
+                        .query_pairs()
+                        .find(|(key, _)| key == "error")
+                        .map(|(_, value)| value.into_owned());
 
-                let response = if let Some(ref error) = error {
-                    format!(
-                        "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\n\r\n<h1>Blocksmith sign-in failed</h1><p>{error}</p>"
-                    )
-                } else {
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<h1>Blocksmith sign-in complete</h1><p>You can close this window and return to the launcher.</p>".to_string()
-                };
-                stream.write_all(response.as_bytes())?;
-                stream.flush()?;
+                    let response = if let Some(ref error) = error {
+                        format!(
+                            "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\n\r\n<h1>Blocksmith sign-in failed</h1><p>{error}</p>"
+                        )
+                    } else {
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<h1>Blocksmith sign-in complete</h1><p>You can close this window and return to the launcher.</p>".to_string()
+                    };
+                    stream.write_all(response.as_bytes())?;
+                    stream.flush()?;
 
-                if let Some(error) = error {
-                    return Err(AppError::Validation(format!(
-                        "microsoft sign-in was cancelled or denied: {error}"
-                    )));
+                    if let Some(error) = error {
+                        return Err(AppError::Validation(format!(
+                            "microsoft sign-in was cancelled or denied: {error}"
+                        )));
+                    }
+
+                    if state.as_deref() != Some(expected_state) {
+                        return Err(AppError::Validation(
+                            "oauth callback state did not match the expected sign-in session"
+                                .to_string(),
+                        ));
+                    }
+
+                    return code.ok_or_else(|| {
+                        AppError::Validation("oauth callback did not include an authorization code".to_string())
+                    });
                 }
-
-                if state.as_deref() != Some(expected_state) {
-                    return Err(AppError::Validation(
-                        "oauth callback state did not match the expected sign-in session"
-                            .to_string(),
-                    ));
-                }
-
-                return code.ok_or_else(|| {
-                    AppError::Validation("oauth callback did not include an authorization code".to_string())
-                });
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => return Err(error.into()),
             }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                if Instant::now() > deadline {
-                    return Err(AppError::Validation(
-                        "timed out waiting for the Microsoft sign-in callback".to_string(),
-                    ));
-                }
-                thread::sleep(Duration::from_millis(150));
-            }
-            Err(error) => return Err(error.into()),
         }
+
+        if Instant::now() > deadline {
+            return Err(AppError::Validation(
+                "timed out waiting for the Microsoft sign-in callback".to_string(),
+            ));
+        }
+
+        thread::sleep(Duration::from_millis(150));
     }
 }
 
@@ -510,14 +528,32 @@ fn exchange_minecraft_chain(client: &Client, live_access_token: &str) -> AppResu
         .error_for_status()?
         .json()?;
 
-    let minecraft_login: MinecraftLoginResponse = client
+    let minecraft_login_response = client
         .post(MINECRAFT_LOGIN_URL)
         .json(&serde_json::json!({
             "identityToken": format!("XBL3.0 x={user_hash};{}", xsts.token)
         }))
-        .send()?
-        .error_for_status()?
-        .json()?;
+        .send()?;
+    if !minecraft_login_response.status().is_success() {
+        let status = minecraft_login_response.status();
+        let body = minecraft_login_response.text().unwrap_or_default();
+        let body_lower = body.to_ascii_lowercase();
+
+        if body_lower.contains("invalid app registration") || body_lower.contains("appreginfo") {
+            return Err(AppError::Validation(
+                "Microsoft sign-in succeeded, but Minecraft Services rejected this app registration. New launcher app IDs need separate Minecraft/Xbox approval before online sign-in will work."
+                    .to_string(),
+            ));
+        }
+
+        let detail = body.trim();
+        return Err(AppError::Validation(if detail.is_empty() {
+            format!("minecraft services rejected the Xbox login request with {status}")
+        } else {
+            format!("minecraft services rejected the Xbox login request with {status}: {detail}")
+        }));
+    }
+    let minecraft_login: MinecraftLoginResponse = minecraft_login_response.json()?;
 
     let entitlements: EntitlementsResponse = client
         .get(MINECRAFT_ENTITLEMENTS_URL)
@@ -655,4 +691,18 @@ struct MinecraftSession {
     minecraft_access_token: String,
     user_hash: String,
     profile: MinecraftProfile,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::start_loopback_listener;
+
+    #[test]
+    fn loopback_listener_uses_localhost_redirect_uri() {
+        let (listeners, redirect_uri) = start_loopback_listener().expect("listener should bind");
+
+        assert!(!listeners.is_empty());
+        assert!(redirect_uri.starts_with("http://localhost:"));
+        assert!(redirect_uri.ends_with("/callback"));
+    }
 }

@@ -3,6 +3,7 @@ use rusqlite::{params, Connection};
 use rusqlite_migration::{Migrations, M};
 
 use crate::{
+    auth::PACKAGED_MICROSOFT_CLIENT_ID,
     error::AppResult,
     paths::AppPaths,
 };
@@ -138,7 +139,7 @@ fn seed_settings(connection: &Connection) -> AppResult<()> {
         ("ui_density", "compact", "ui"),
         ("log_retention_days", "30", "logging"),
         ("managed_runtime_preference", "auto", "launch"),
-        ("microsoft_client_id", "", "auth"),
+        ("microsoft_client_id", PACKAGED_MICROSOFT_CLIENT_ID, "auth"),
         ("launcher_name", "Blocksmith", "launch"),
         ("launcher_version", "0.1.0", "launch"),
     ];
@@ -153,6 +154,15 @@ fn seed_settings(connection: &Connection) -> AppResult<()> {
             params![key, value, category, now],
         )?;
     }
+
+    connection.execute(
+        "
+        UPDATE settings
+        SET value = ?1, updated_at = ?2
+        WHERE key = 'microsoft_client_id' AND TRIM(value) = ''
+        ",
+        params![PACKAGED_MICROSOFT_CLIENT_ID, now],
+    )?;
 
     Ok(())
 }
