@@ -2,6 +2,7 @@ use rusqlite::OptionalExtension;
 use tauri::State;
 
 use crate::{
+    auth,
     dto::DashboardSnapshot,
     error::AppResult,
     state::AppState,
@@ -35,6 +36,9 @@ fn inner_dashboard_snapshot(state: &AppState) -> AppResult<DashboardSnapshot> {
         .optional()?;
     let signed_in_account_count =
         connection.query_row("SELECT COUNT(*) FROM accounts", [], |row| row.get(0))?;
+    drop(connection);
+    let launcher_unlocked = auth::launcher_unlocked(state)?;
+    let connection = state.db()?;
     let local_skin_count =
         connection.query_row("SELECT COUNT(*) FROM skins", [], |row| row.get(0))?;
     let pending_update_count = 0;
@@ -45,8 +49,8 @@ fn inner_dashboard_snapshot(state: &AppState) -> AppResult<DashboardSnapshot> {
         fabric_profile_count,
         latest_profile_name,
         signed_in_account_count,
+        launcher_unlocked,
         local_skin_count,
         pending_update_count,
     })
 }
-

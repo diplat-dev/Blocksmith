@@ -92,6 +92,7 @@ export default function App() {
       case "profiles":
         return (
           <ProfileWorkbench
+            launcherUnlocked={dashboardQuery.data?.launcherUnlocked ?? false}
             profiles={profilesQuery.data ?? []}
             search={deferredSearch}
           />
@@ -133,7 +134,12 @@ export default function App() {
       case "updates":
         return <UpdatesView profiles={profilesQuery.data ?? []} />;
       case "accounts":
-        return <AccountsView profiles={profilesQuery.data ?? []} />;
+        return (
+          <AccountsView
+            launcherUnlocked={dashboardQuery.data?.launcherUnlocked ?? false}
+            profiles={profilesQuery.data ?? []}
+          />
+        );
       case "skins":
         return <SkinsView />;
       default:
@@ -186,6 +192,17 @@ export default function App() {
             <h2>{activeLabel}</h2>
           </div>
           <div className="topbar-stats">
+            <span
+              className={
+                dashboardQuery.data?.launcherUnlocked
+                  ? "status-pill ready"
+                  : "status-pill neutral"
+              }
+            >
+              {dashboardQuery.data?.launcherUnlocked
+                ? "Launch enabled"
+                : "Sign in once to launch"}
+            </span>
             <span>
               Profiles <strong>{dashboardQuery.data?.profileCount ?? 0}</strong>
             </span>

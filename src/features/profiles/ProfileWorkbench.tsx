@@ -22,6 +22,7 @@ import { EmptyState } from "../shared/EmptyState";
 import { formatDateTime } from "../../lib/format";
 
 interface ProfileWorkbenchProps {
+  launcherUnlocked: boolean;
   profiles: ProfileSummary[];
   search: string;
 }
@@ -36,7 +37,11 @@ const initialDraft: CreateProfileInput = {
   launchArgs: "",
 };
 
-export function ProfileWorkbench({ profiles, search }: ProfileWorkbenchProps) {
+export function ProfileWorkbench({
+  launcherUnlocked,
+  profiles,
+  search,
+}: ProfileWorkbenchProps) {
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<CreateProfileInput>(initialDraft);
   const [selectedProfileId, setSelectedProfileId] = useState("");
@@ -414,12 +419,17 @@ export function ProfileWorkbench({ profiles, search }: ProfileWorkbenchProps) {
             <button
               className="primary"
               onClick={() => selectedProfileId && launchMutation.mutate(selectedProfileId)}
-              disabled={!selectedProfileId}
+              disabled={!selectedProfileId || !launcherUnlocked}
             >
               {launchMutation.isPending ? "Launching..." : "Launch profile"}
             </button>
           </div>
 
+          <p className="muted">
+            {launcherUnlocked
+              ? "Downloads and launch are enabled on this device."
+              : "Sign in once in Accounts with a Microsoft account that owns Minecraft to enable downloads and launch. Preview stays available."}
+          </p>
           {launchTarget ? (
             <p className="muted">
               Account: {launchTarget.accountId ?? "None selected"}

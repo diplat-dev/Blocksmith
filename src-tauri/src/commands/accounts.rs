@@ -53,6 +53,8 @@ fn inner_list_accounts(state: &AppState) -> AppResult<Vec<AccountSummary>> {
           accounts.provider,
           accounts.avatar_url,
           accounts.current_skin_id,
+          accounts.owns_minecraft,
+          accounts.ownership_verified_at,
           accounts.created_at,
           accounts.updated_at,
           CASE WHEN account_tokens.account_id IS NULL THEN 0 ELSE 1 END
@@ -70,9 +72,11 @@ fn inner_list_accounts(state: &AppState) -> AppResult<Vec<AccountSummary>> {
             provider: row.get(3)?,
             avatar_url: row.get(4)?,
             current_skin_id: row.get(5)?,
-            created_at: row.get(6)?,
-            updated_at: row.get(7)?,
-            is_authenticated: row.get::<_, i64>(8)? != 0,
+            owns_minecraft: row.get::<_, i64>(6)? != 0,
+            ownership_verified_at: row.get(7)?,
+            created_at: row.get(8)?,
+            updated_at: row.get(9)?,
+            is_authenticated: row.get::<_, i64>(10)? != 0,
         })
     })?;
 
@@ -99,8 +103,19 @@ fn inner_create_local_account(state: &AppState, input: CreateLocalAccountInput) 
     let connection = state.db()?;
     connection.execute(
         "
-        INSERT INTO accounts (id, username, uuid, provider, avatar_url, current_skin_id, created_at, updated_at)
-        VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6)
+        INSERT INTO accounts (
+          id,
+          username,
+          uuid,
+          provider,
+          avatar_url,
+          current_skin_id,
+          owns_minecraft,
+          ownership_verified_at,
+          created_at,
+          updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, NULL, NULL, 0, NULL, ?5, ?6)
         ",
         params![account_id, username, uuid, provider, now, now],
     )?;
@@ -115,6 +130,8 @@ fn inner_create_local_account(state: &AppState, input: CreateLocalAccountInput) 
               accounts.provider,
               accounts.avatar_url,
               accounts.current_skin_id,
+              accounts.owns_minecraft,
+              accounts.ownership_verified_at,
               accounts.created_at,
               accounts.updated_at,
               CASE WHEN account_tokens.account_id IS NULL THEN 0 ELSE 1 END
@@ -131,9 +148,11 @@ fn inner_create_local_account(state: &AppState, input: CreateLocalAccountInput) 
                     provider: row.get(3)?,
                     avatar_url: row.get(4)?,
                     current_skin_id: row.get(5)?,
-                    created_at: row.get(6)?,
-                    updated_at: row.get(7)?,
-                    is_authenticated: row.get::<_, i64>(8)? != 0,
+                    owns_minecraft: row.get::<_, i64>(6)? != 0,
+                    ownership_verified_at: row.get(7)?,
+                    created_at: row.get(8)?,
+                    updated_at: row.get(9)?,
+                    is_authenticated: row.get::<_, i64>(10)? != 0,
                 })
             },
         )

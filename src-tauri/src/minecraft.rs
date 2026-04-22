@@ -16,7 +16,7 @@ use uuid::Uuid;
 use zip::ZipArchive;
 
 use crate::{
-    auth::{resolve_launch_auth_session, LaunchAuthSession},
+    auth::{ensure_launcher_unlocked, resolve_launch_auth_session, LaunchAuthSession},
     dto::{FabricLoaderSummary, LaunchPlan, MinecraftVersionSummary, ProfileSummary, ProfileType},
     error::{AppError, AppResult},
     paths::AppPaths,
@@ -77,6 +77,7 @@ pub fn resolve_launch_plan(state: &AppState, profile: &ProfileSummary) -> AppRes
 }
 
 pub fn prepare_launch(state: &AppState, profile: &ProfileSummary) -> AppResult<PreparedLaunch> {
+    ensure_launcher_unlocked(state)?;
     resolve_launch_plan_inner(state, profile, LaunchResolutionMode::Prepare)
 }
 
@@ -1994,11 +1995,17 @@ mod tests {
     use super::{
         apply_placeholders, ensure_cache_layout, ensure_managed_runtime, extract_natives,
         fetch_complete_version_by_id, fetch_version_manifest, http_client, native_archive_output_name,
-        native_classifier_matches, parse_java_major_version, Library, RuntimeAllManifest, Rule,
+        native_classifier_matches, parse_java_major_version, prepare_launch, Library,
+        RuntimeAllManifest, Rule,
     };
     use std::{collections::HashMap, env, fs, path::PathBuf};
 
-    use crate::{paths::AppPaths, state::AppState};
+    use crate::{
+        auth::MINECRAFT_OWNERSHIP_REQUIRED_MESSAGE,
+        dto::{ProfileSummary, ProfileType},
+        paths::AppPaths,
+        state::AppState,
+    };
 
     struct TestRoot {
         root: PathBuf,
@@ -2149,6 +2156,47 @@ mod tests {
         );
         assert_eq!(native_archive_output_name("META-INF/windows/x64/org/lwjgl/lwjgl.dll.sha1"), None);
         assert_eq!(native_archive_output_name("META-INF/versions/11/module-info.class"), None);
+    }
+
+    #[test]
+    fn prepare_launch_requires_verified_owner_before_downloads() {
+        let test_root = TestRoot::new("ownership-gate");
+        let paths = test_root.paths();
+        paths.ensure_layout().expect("should create isolated app layout");
+        let state = AppState::bootstrap(paths).expect("should bootstrap isolated state");
+        let profile = ProfileSummary {
+            id: "profile-ownership".to_string(),
+            name: "Ownership Gate".to_string(),
+            profile_type: ProfileType::Vanilla,
+            minecraft_version: "1.21.5".to_string(),
+            loader_version: None,
+            directory_path: state
+                .paths
+                .profile_root("profile-ownership")
+                .to_string_lossy()
+                .into_owned(),
+            account_id: None,
+            java_path: None,
+            memory_min_mb: None,
+            memory_max_mb: None,
+            jvm_args: String::new(),
+            launch_args: String::new(),
+            notes: None,
+            created_at: "2026-04-22T00:00:00Z".to_string(),
+            updated_at: "2026-04-22T00:00:00Z".to_string(),
+            last_played_at: None,
+        };
+
+        let error = match prepare_launch(&state, &profile) {
+            Ok(_) => panic!("launch should be blocked"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.to_string(), MINECRAFT_OWNERSHIP_REQUIRED_MESSAGE);
+        assert!(
+            !state.paths.cache_dir.join("versions").exists(),
+            "prepare should fail before creating Minecraft download cache directories"
+        );
     }
 
     #[test]

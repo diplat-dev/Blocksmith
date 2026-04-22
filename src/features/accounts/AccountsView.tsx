@@ -8,13 +8,15 @@ import {
   signInMicrosoft,
 } from "../../lib/tauri";
 import type { ProfileSummary } from "../../types/api";
+import { formatDateTime } from "../../lib/format";
 import { EmptyState } from "../shared/EmptyState";
 
 interface AccountsViewProps {
+  launcherUnlocked: boolean;
   profiles: ProfileSummary[];
 }
 
-export function AccountsView({ profiles }: AccountsViewProps) {
+export function AccountsView({ launcherUnlocked, profiles }: AccountsViewProps) {
   const queryClient = useQueryClient();
   const [username, setUsername] = useState("");
   const [provider, setProvider] = useState("manual");
@@ -150,7 +152,9 @@ export function AccountsView({ profiles }: AccountsViewProps) {
               : "Sign in with Microsoft"}
           </button>
           <span className="muted">
-            Set microsoft_client_id in Settings before using Microsoft sign-in.
+            {launcherUnlocked
+              ? "Downloads and launch are unlocked on this device. You can still use offline accounts for individual profiles."
+              : "Sign in once with a Microsoft account that owns Minecraft to unlock downloads and launch. Offline accounts stay available after that."}
           </span>
         </div>
       </section>
@@ -185,6 +189,17 @@ export function AccountsView({ profiles }: AccountsViewProps) {
                   Session: {account.isAuthenticated ? "Online" : "Offline"}
                 </p>
                 <p className="muted">
+                  Launch access:{" "}
+                  {account.ownsMinecraft
+                    ? "Unlocks downloads and launch"
+                    : "Does not unlock downloads and launch"}
+                </p>
+                {account.ownershipVerifiedAt ? (
+                  <p className="muted">
+                    Verified owner: {formatDateTime(account.ownershipVerifiedAt)}
+                  </p>
+                ) : null}
+                <p className="muted">
                   Active skin: {account.currentSkinId ?? "none"}
                 </p>
               </article>
@@ -195,7 +210,7 @@ export function AccountsView({ profiles }: AccountsViewProps) {
         <EmptyState
           eyebrow="Accounts"
           title="No accounts stored yet"
-          body="Create an offline account or sign in with Microsoft, then assign that account to a profile before launch."
+          body="Create offline accounts for local play, then sign in once with Microsoft to unlock Minecraft downloads and launch."
         />
       )}
 

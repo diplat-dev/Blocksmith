@@ -5,7 +5,7 @@ interface DashboardViewProps {
 }
 
 const quickStart = [
-  "Set microsoft_client_id and an optional Java override in Settings.",
+  "Sign in once with a Microsoft account that owns Minecraft to unlock downloads and launch.",
   "Create or import a profile, or install a Modrinth modpack into a new profile.",
   "Choose an account, preview launch details, and start from Profiles.",
   "Use Discover, Updates, Skins, and Share to keep the library current.",
@@ -51,10 +51,12 @@ export function DashboardView({ snapshot }: DashboardViewProps) {
           </p>
         </div>
         <div className="hero-glance">
-          <span className="glance-label">Latest profile</span>
-          <strong>{snapshot?.latestProfileName ?? "No profiles yet"}</strong>
+          <span className="glance-label">Launch access</span>
+          <strong>
+            {snapshot?.launcherUnlocked ? "Ready to launch" : "Sign in once"}
+          </strong>
           <span className="muted">
-            Pending updates: {snapshot?.pendingUpdateCount ?? 0}
+            Latest profile: {snapshot?.latestProfileName ?? "No profiles yet"}
           </span>
         </div>
       </section>

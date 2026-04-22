@@ -24,6 +24,8 @@ use crate::{
 };
 
 pub const PACKAGED_MICROSOFT_CLIENT_ID: &str = "58a4d0d2-52b6-4209-b74f-fc2c2033e9d8";
+pub const MINECRAFT_OWNERSHIP_REQUIRED_MESSAGE: &str =
+    "Sign in once with a Microsoft account that owns Minecraft to enable downloads and launch.";
 
 const LIVE_AUTHORIZE_URL: &str = "https://login.live.com/oauth20_authorize.srf";
 const LIVE_TOKEN_URL: &str = "https://login.live.com/oauth20_token.srf";
@@ -62,6 +64,30 @@ pub fn sign_in_with_microsoft(state: &AppState) -> AppResult<AccountSummary> {
     let live_tokens =
         exchange_authorization_code(&auth_client, &client_id, &redirect_uri, &code_verifier, &auth_code)?;
     persist_microsoft_account(state, &auth_client, live_tokens.refresh_token, &live_tokens.access_token)
+}
+
+pub fn launcher_unlocked(state: &AppState) -> AppResult<bool> {
+    let connection = state.db()?;
+    let count: i64 = connection.query_row(
+        "
+        SELECT COUNT(*)
+        FROM accounts
+        WHERE provider = 'microsoft' AND owns_minecraft = 1
+        ",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+pub fn ensure_launcher_unlocked(state: &AppState) -> AppResult<()> {
+    if launcher_unlocked(state)? {
+        Ok(())
+    } else {
+        Err(AppError::Validation(
+            MINECRAFT_OWNERSHIP_REQUIRED_MESSAGE.to_string(),
+        ))
+    }
 }
 
 pub fn resolve_launch_auth_session(
@@ -207,13 +233,26 @@ fn persist_microsoft_account(
 
     connection.execute(
         "
-        INSERT INTO accounts (id, username, uuid, provider, avatar_url, current_skin_id, created_at, updated_at)
-        VALUES (?1, ?2, ?3, 'microsoft', ?4, NULL, ?5, ?6)
+        INSERT INTO accounts (
+          id,
+          username,
+          uuid,
+          provider,
+          avatar_url,
+          current_skin_id,
+          owns_minecraft,
+          ownership_verified_at,
+          created_at,
+          updated_at
+        )
+        VALUES (?1, ?2, ?3, 'microsoft', ?4, NULL, 1, ?5, ?6, ?7)
         ON CONFLICT(id) DO UPDATE SET
           username = excluded.username,
           uuid = excluded.uuid,
           provider = excluded.provider,
           avatar_url = excluded.avatar_url,
+          owns_minecraft = excluded.owns_minecraft,
+          ownership_verified_at = excluded.ownership_verified_at,
           updated_at = excluded.updated_at
         ",
         params![
@@ -221,6 +260,7 @@ fn persist_microsoft_account(
             minecraft.profile.name,
             minecraft.profile.id,
             minecraft.profile.primary_skin_url(),
+            now,
             now,
             now,
         ],
@@ -268,7 +308,12 @@ fn update_microsoft_account_profile(
     connection.execute(
         "
         UPDATE accounts
-        SET username = ?1, uuid = ?2, avatar_url = ?3, updated_at = ?4
+        SET username = ?1,
+            uuid = ?2,
+            avatar_url = ?3,
+            owns_minecraft = 1,
+            ownership_verified_at = ?4,
+            updated_at = ?4
         WHERE id = ?5
         ",
         params![username, uuid, avatar_url, Utc::now().to_rfc3339(), account_id],
@@ -288,6 +333,8 @@ fn account_summary(state: &AppState, account_id: &str) -> AppResult<AccountSumma
               accounts.provider,
               accounts.avatar_url,
               accounts.current_skin_id,
+              accounts.owns_minecraft,
+              accounts.ownership_verified_at,
               accounts.created_at,
               accounts.updated_at,
               CASE WHEN account_tokens.account_id IS NULL THEN 0 ELSE 1 END
@@ -304,9 +351,11 @@ fn account_summary(state: &AppState, account_id: &str) -> AppResult<AccountSumma
                     provider: row.get(3)?,
                     avatar_url: row.get(4)?,
                     current_skin_id: row.get(5)?,
-                    created_at: row.get(6)?,
-                    updated_at: row.get(7)?,
-                    is_authenticated: row.get::<_, i64>(8)? != 0,
+                    owns_minecraft: row.get::<_, i64>(6)? != 0,
+                    ownership_verified_at: row.get(7)?,
+                    created_at: row.get(8)?,
+                    updated_at: row.get(9)?,
+                    is_authenticated: row.get::<_, i64>(10)? != 0,
                 })
             },
         )
@@ -695,7 +744,47 @@ struct MinecraftSession {
 
 #[cfg(test)]
 mod tests {
-    use super::start_loopback_listener;
+    use std::{env, fs};
+
+    use chrono::Utc;
+    use rusqlite::params;
+    use uuid::Uuid;
+
+    use super::{launcher_unlocked, start_loopback_listener};
+    use crate::{paths::AppPaths, state::AppState};
+
+    struct TestRoot {
+        root: std::path::PathBuf,
+    }
+
+    impl TestRoot {
+        fn new(prefix: &str) -> Self {
+            let root = env::temp_dir()
+                .join("blocksmith-auth-tests")
+                .join(format!("{prefix}-{}", Uuid::new_v4().simple()));
+            Self { root }
+        }
+
+        fn paths(&self) -> AppPaths {
+            AppPaths {
+                root_dir: self.root.clone(),
+                db_path: self.root.join("db.sqlite"),
+                cache_dir: self.root.join("cache"),
+                logs_dir: self.root.join("logs"),
+                profiles_dir: self.root.join("profiles"),
+                skins_dir: self.root.join("skins"),
+                exports_dir: self.root.join("exports"),
+                runtimes_dir: self.root.join("runtimes"),
+                temp_dir: self.root.join("temp"),
+            }
+        }
+    }
+
+    impl Drop for TestRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
 
     #[test]
     fn loopback_listener_uses_localhost_redirect_uri() {
@@ -704,5 +793,64 @@ mod tests {
         assert!(!listeners.is_empty());
         assert!(redirect_uri.starts_with("http://localhost:"));
         assert!(redirect_uri.ends_with("/callback"));
+    }
+
+    #[test]
+    fn launcher_unlock_requires_a_verified_microsoft_owner() {
+        let test_root = TestRoot::new("unlock");
+        let paths = test_root.paths();
+        paths.ensure_layout().expect("should create isolated app layout");
+        let state = AppState::bootstrap(paths).expect("should bootstrap isolated state");
+        let connection = state.db().expect("should open database");
+        let now = Utc::now().to_rfc3339();
+
+        connection
+            .execute(
+                "
+                INSERT INTO accounts (
+                  id, username, uuid, provider, avatar_url, current_skin_id,
+                  owns_minecraft, ownership_verified_at, created_at, updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, ?8)
+                ",
+                params![
+                    "manual-account",
+                    "Offline",
+                    "uuid-manual",
+                    "manual",
+                    0,
+                    Option::<String>::None,
+                    now,
+                    now
+                ],
+            )
+            .expect("should insert local account");
+        drop(connection);
+
+        assert!(!launcher_unlocked(&state).expect("query should succeed"));
+
+        let connection = state.db().expect("should reopen database");
+        connection
+            .execute(
+                "
+                INSERT INTO accounts (
+                  id, username, uuid, provider, avatar_url, current_skin_id,
+                  owns_minecraft, ownership_verified_at, created_at, updated_at
+                )
+                VALUES (?1, ?2, ?3, 'microsoft', NULL, NULL, 1, ?4, ?5, ?6)
+                ",
+                params![
+                    "msa-account",
+                    "Taylor",
+                    "uuid-msa",
+                    now,
+                    now,
+                    now
+                ],
+            )
+            .expect("should insert verified microsoft account");
+        drop(connection);
+
+        assert!(launcher_unlocked(&state).expect("query should succeed"));
     }
 }

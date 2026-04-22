@@ -400,6 +400,8 @@ pub struct AccountSummary {
     pub provider: String,
     pub avatar_url: Option<String>,
     pub current_skin_id: Option<String>,
+    pub owns_minecraft: bool,
+    pub ownership_verified_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub is_authenticated: bool,
@@ -535,6 +537,7 @@ pub struct DashboardSnapshot {
     pub fabric_profile_count: i64,
     pub latest_profile_name: Option<String>,
     pub signed_in_account_count: i64,
+    pub launcher_unlocked: bool,
     pub local_skin_count: i64,
     pub pending_update_count: i64,
 }

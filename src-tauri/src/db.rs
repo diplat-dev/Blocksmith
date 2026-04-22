@@ -128,6 +128,17 @@ fn migrations() -> Migrations<'static> {
         );
         ",
         ),
+        M::up(
+            "
+        ALTER TABLE accounts ADD COLUMN owns_minecraft INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE accounts ADD COLUMN ownership_verified_at TEXT;
+
+        UPDATE accounts
+        SET owns_minecraft = 1,
+            ownership_verified_at = COALESCE(ownership_verified_at, updated_at)
+        WHERE provider = 'microsoft';
+        ",
+        ),
     ])
 }
 
@@ -165,4 +176,96 @@ fn seed_settings(connection: &Connection) -> AppResult<()> {
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{env, fs};
+
+    use rusqlite::{params, OptionalExtension};
+    use uuid::Uuid;
+
+    use super::migrations;
+
+    #[test]
+    fn migration_backfills_existing_microsoft_accounts_as_verified_owners() {
+        let root = env::temp_dir()
+            .join("blocksmith-db-tests")
+            .join(format!("migration-{}", Uuid::new_v4().simple()));
+        fs::create_dir_all(&root).expect("should create temp test root");
+        let db_path = root.join("db.sqlite");
+
+        let mut connection =
+            rusqlite::Connection::open(&db_path).expect("should open isolated database");
+        migrations()
+            .to_version(&mut connection, 2)
+            .expect("should create pre-ownership schema");
+
+        connection
+            .execute(
+                "
+                INSERT INTO accounts (id, username, uuid, provider, avatar_url, current_skin_id, created_at, updated_at)
+                VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6)
+                ",
+                params![
+                    "account-msa",
+                    "Taylor",
+                    "uuid-msa",
+                    "microsoft",
+                    "2026-04-22T00:00:00Z",
+                    "2026-04-22T00:00:00Z"
+                ],
+            )
+            .expect("should insert existing microsoft account");
+        connection
+            .execute(
+                "
+                INSERT INTO accounts (id, username, uuid, provider, avatar_url, current_skin_id, created_at, updated_at)
+                VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6)
+                ",
+                params![
+                    "account-manual",
+                    "Offline",
+                    "uuid-manual",
+                    "manual",
+                    "2026-04-22T00:00:00Z",
+                    "2026-04-22T00:00:00Z"
+                ],
+            )
+            .expect("should insert existing manual account");
+
+        migrations()
+            .to_latest(&mut connection)
+            .expect("should migrate to latest schema");
+
+        let microsoft_row: Option<(i64, Option<String>)> = connection
+            .query_row(
+                "
+                SELECT owns_minecraft, ownership_verified_at
+                FROM accounts
+                WHERE id = 'account-msa'
+                ",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .expect("query should succeed");
+        let manual_row: Option<(i64, Option<String>)> = connection
+            .query_row(
+                "
+                SELECT owns_minecraft, ownership_verified_at
+                FROM accounts
+                WHERE id = 'account-manual'
+                ",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .expect("query should succeed");
+
+        let _ = fs::remove_dir_all(&root);
+
+        assert_eq!(microsoft_row, Some((1, Some("2026-04-22T00:00:00Z".to_string()))));
+        assert_eq!(manual_row, Some((0, None)));
+    }
 }

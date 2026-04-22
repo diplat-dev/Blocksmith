@@ -186,6 +186,8 @@ export interface AccountSummary {
   provider: string;
   avatarUrl: string | null;
   currentSkinId: string | null;
+  ownsMinecraft: boolean;
+  ownershipVerifiedAt: string | null;
   createdAt: string;
   updatedAt: string;
   isAuthenticated: boolean;
@@ -274,6 +276,7 @@ export interface DashboardSnapshot {
   fabricProfileCount: number;
   latestProfileName: string | null;
   signedInAccountCount: number;
+  launcherUnlocked: boolean;
   localSkinCount: number;
   pendingUpdateCount: number;
 }
